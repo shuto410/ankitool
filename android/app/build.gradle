@@ -85,6 +85,10 @@ android {
         versionCode 1
         versionName "1.0"
     }
+    
+    aaptOptions {
+        noCompress "sqlite3", "db"
+    }
     signingConfigs {
         debug {
             storeFile file('debug.keystore')
