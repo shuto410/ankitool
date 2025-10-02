@@ -9,12 +9,6 @@ import { Platform } from 'react-native';
 // Database configuration
 export const DB_NAME = 'ejdict.sqlite3';
 export const BUNDLE_VERSION = 5; // Increment this when bundled DB is updated
-// const BUNDLE_PATH = Platform.select<
-//   'android/app/src/main/assets/ejdict.sqlite3' | 'ejdict.sqlite3'
-// >({
-//   android: 'android/app/src/main/assets/ejdict.sqlite3',
-//   ios: 'ejdict.sqlite3',
-// })!;
 const BUNDLE_PATH = 'ejdict.sqlite3' as const;
 
 // Storage paths
@@ -27,9 +21,6 @@ export const DEST_DIR = Platform.select({
 })!;
 
 export const DEST_PATH = `${DEST_DIR}/${DB_NAME}` as const;
-
-// Version tracking key
-const VERSION_KEY = '@dictionary/installed_version';
 
 // Global initialization lock
 let initializationPromise: Promise<void> | null = null;
@@ -91,12 +82,7 @@ async function verifySQLiteFile(filePath: string): Promise<boolean> {
   try {
     // Read first 16 bytes to check SQLite magic number
     const header = await RNFS.read(filePath, 16, 0, 'ascii');
-    const isValid = header.startsWith('SQLite format 3');
-    console.log('SQLite header check:', isValid ? 'VALID' : 'INVALID');
-    if (!isValid) {
-      console.log('Header content:', header);
-    }
-    return isValid;
+    return header.startsWith('SQLite format 3');
   } catch (error) {
     console.error('Error verifying SQLite file:', error);
     return false;
@@ -110,7 +96,6 @@ async function verifySQLiteFile(filePath: string): Promise<boolean> {
 export async function ensureDictionaryReady(): Promise<void> {
   // Use global promise to prevent concurrent initialization
   if (initializationPromise) {
-    console.log('initializationPromise already exists');
     return initializationPromise;
   }
 
@@ -118,78 +103,35 @@ export async function ensureDictionaryReady(): Promise<void> {
     try {
       // Create destination directory if needed
       if (!(await RNFS.exists(DEST_DIR))) {
-        console.log('DEST_DIR does not exist, creating...');
         await RNFS.mkdir(DEST_DIR);
       }
 
-      console.log('DEST_DIR:', DEST_DIR);
-      console.log('DEST_PATH:', DEST_PATH);
-
       // Check if we need to copy
       if (await shouldCopyDictionary()) {
-        console.log('shouldCopyDictionary is true, copying...');
-
         // Delete existing file if it exists (to ensure clean copy)
         if (await RNFS.exists(DEST_PATH)) {
-          console.log('Deleting existing DB file...');
           await RNFS.unlink(DEST_PATH);
         }
 
         // Copy bundled dictionary
         if (Platform.OS === 'android') {
-          console.log(
-            'copying bundled dictionary to DEST_PATH android',
-            'from:',
-            BUNDLE_PATH,
-            'to:',
-            DEST_PATH,
-          );
-
-          // Check if source exists in assets
-          try {
-            const assetsExists = await RNFS.existsAssets(BUNDLE_PATH);
-            console.log('Asset file exists:', assetsExists);
-          } catch (e) {
-            console.log('Could not check asset existence:', e);
-          }
-
           await RNFS.copyFileAssets(BUNDLE_PATH, DEST_PATH);
-          console.log('copyFileAssets completed');
-
-          // Immediately verify the copied file
-          const copiedExists = await RNFS.exists(DEST_PATH);
-          console.log('Destination file exists after copy:', copiedExists);
         } else {
-          console.log('copying bundled dictionary to DEST_PATH ios');
           const mainBundlePath = RNFS.MainBundlePath;
-          console.log(
-            'from:',
-            `${mainBundlePath}/${BUNDLE_PATH}`,
-            'to:',
-            DEST_PATH,
-          );
           await RNFS.copyFile(`${mainBundlePath}/${BUNDLE_PATH}`, DEST_PATH);
-          console.log('copied bundled dictionary to DEST_PATH');
         }
 
         // Verify the copy was successful
         const destStats = await RNFS.stat(DEST_PATH);
-        const fileSizeMB = (destStats.size / (1024 * 1024)).toFixed(2);
-        console.log(
-          'Copied file size:',
-          destStats.size,
-          'bytes',
-          `(${fileSizeMB} MB)`,
-        );
-
         if (!destStats || destStats.size === 0) {
           throw new Error('Database file copy failed: file is empty');
         }
 
         // Additional verification: check if file size is reasonable (at least 1MB for ejdict)
         if (destStats.size < 1024 * 1024) {
+          const fileSizeMB = (destStats.size / (1024 * 1024)).toFixed(2);
           throw new Error(
-            `Database file copy may be incomplete: size is only ${destStats.size} bytes (${fileSizeMB} MB), expected ~6.7MB`,
+            `Database file copy may be incomplete: size is only ${fileSizeMB} MB, expected ~6.7MB`,
           );
         }
 
@@ -199,48 +141,12 @@ export async function ensureDictionaryReady(): Promise<void> {
           throw new Error('Copied file is not a valid SQLite database');
         }
 
-        // Read sample bytes at different positions to verify actual content
-        const header = await RNFS.read(DEST_PATH, 100, 0, 'base64');
-        const middle = await RNFS.read(
-          DEST_PATH,
-          100,
-          Math.floor(destStats.size / 2),
-          'base64',
-        );
-        const end = await RNFS.read(
-          DEST_PATH,
-          100,
-          destStats.size - 100,
-          'base64',
-        );
-        console.log(
-          'Sample bytes - header length:',
-          header.length,
-          'middle:',
-          middle.length,
-          'end:',
-          end.length,
-        );
-
         // Update version after successful copy
         await saveInstalledVersion(BUNDLE_VERSION);
-        console.log('saved installed version');
       } else {
-        console.log('dictionary is ready');
-        // Log current file size for debugging
-        const stats = await RNFS.stat(DEST_PATH);
-        const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-        console.log(
-          'Existing DB file size:',
-          stats.size,
-          'bytes',
-          `(${fileSizeMB} MB)`,
-        );
-
         // Verify existing file is valid SQLite
         const isValidSQLite = await verifySQLiteFile(DEST_PATH);
         if (!isValidSQLite) {
-          console.log('Existing file is not valid SQLite, will force re-copy');
           await RNFS.unlink(DEST_PATH);
           // Retry the function
           initializationPromise = null;
@@ -261,7 +167,6 @@ export async function ensureDictionaryReady(): Promise<void> {
     } finally {
       // Clear the promise to allow retrying on next call if needed
       initializationPromise = null;
-      console.log('initializationPromise cleared');
     }
   })();
 
